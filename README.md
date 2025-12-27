@@ -27,6 +27,7 @@ This extension supports two fuzzing modes:
   - Booleans → boolean payloads
   - Arrays → array payloads containing numbers and strings
   - Objects → nested object payloads with type-aware handling
+  - Null → all valid data types payloads
 
 ---
 
