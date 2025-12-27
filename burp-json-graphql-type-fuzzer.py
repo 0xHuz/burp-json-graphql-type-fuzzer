@@ -7,7 +7,22 @@ from copy import deepcopy
 from collections import OrderedDict
 
 # -------------------------
-# Customize these payload lists
+# Type Confusion payload lists
+# -------------------------
+
+TYPE_CONFUSION_PAYLOADS = [
+    12345,
+    12.345,
+    "string_value",
+    "!\"$%&'()*+,-./:;<=>?@[]^_`{|}~#\\",
+    [1, 2, 3],
+    {"nested": "object"},
+    True,
+    None,
+]
+
+# -------------------------
+# GraphQL payload lists
 # -------------------------
 STRING_PAYLOADS = [
     "",
@@ -36,7 +51,16 @@ OBJECT_PAYLOADS = [
     {"string": "!\"$%&'()*+,-./:;<=>?@[]^_`{|}~#\\", "number": 0},
 ]
 
-NULL_PAYLOADS = []
+NULL_PAYLOADS = [
+    12345,
+    12.345,
+    "string_value",
+    "!\"$%&'()*+,-./:;<=>?@[]^_`{|}~#\\",
+    [1, 2, 3],
+    {"nested": "object"},
+    True,
+]
+
 # -------------------------
 
 
@@ -137,21 +161,11 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IHttpListener):
 
     def generate_type_confusion_payloads(self, input_json):
         payloads = []
-        type_confusion_values = [
-            12345,
-            12.345,
-            "string_value",
-            "!\"$%&'()*+,-./:;<=>?@[]^_`{|}~#\\",
-            [1, 2, 3],
-            {"nested": "object"},
-            True,
-            None,
-        ]
 
         def modify_json(obj, parent_keys=[]):
             if isinstance(obj, dict):
                 for key in obj.keys():
-                    for value in type_confusion_values:
+                    for value in TYPE_CONFUSION_PAYLOADS:
                         modified_json = deepcopy(input_json)
                         target = modified_json
                         for parent in parent_keys:
@@ -169,12 +183,6 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IHttpListener):
     def generate_graphql_variable_payloads(
         self, full_json, variables_obj, variables_are_string_encoded
     ):
-        """
-        Collect candidates such that:
-         - If a variable is an object or array, we include whole-object/whole-array replacements
-           (using OBJECT_PAYLOADS / ARRAY_PAYLOADS) AND DO NOT recurse into that object/array.
-         - If a variable is a primitive (string/int/float/bool/null), include primitive replacements.
-        """
         payloads = []
 
         def set_by_path(obj, path, value):
@@ -206,32 +214,29 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IHttpListener):
             else:
                 return []
 
-        # Collect top-level candidate paths. When encountering a dict/list, record it as a
-        # whole-replace candidate and DO NOT recurse into its children.
-        leaf_paths = []  # list of tuples (path, value, replace_whole_bool)
+        leaf_paths = []
 
-        def collect_top_level_candidates(obj, path):
+        def collect_leaf_paths(obj, path):
             if isinstance(obj, dict):
                 for k, v in obj.items():
-                    if isinstance(v, dict) or isinstance(v, list):
-                        # record the child itself as a whole-replacement candidate and do NOT recurse into it
+                    # add this dict itself as a candidate (whole object replacement)
+                    if isinstance(v, dict):
                         leaf_paths.append((path + [k], v, True))
-                    else:
-                        # primitive: record for primitive replacement
-                        leaf_paths.append((path + [k], v, False))
+                    elif isinstance(v, list):
+                        leaf_paths.append((path + [k], v, True))
+                    collect_leaf_paths(v, path + [k])
             elif isinstance(obj, list):
                 for i, item in enumerate(obj):
-                    if isinstance(item, dict) or isinstance(item, list):
+                    if isinstance(item, dict):
                         leaf_paths.append((path + [i], item, True))
-                    else:
-                        leaf_paths.append((path + [i], item, False))
+                    elif isinstance(item, list):
+                        leaf_paths.append((path + [i], item, True))
+                    collect_leaf_paths(item, path + [i])
             else:
-                # shouldn't reach here for top-level variables (we only call on dict), but keep for completeness
                 leaf_paths.append((path, obj, False))
 
-        collect_top_level_candidates(variables_obj, [])
+        collect_leaf_paths(variables_obj, [])
 
-        # For each collected candidate, use appropriate payload list and produce full payloads
         for path, original_value, replace_whole in leaf_paths:
             candidates = payloads_for_type(original_value)
             if not candidates:
@@ -246,10 +251,20 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, IHttpListener):
                     vars_parsed = json.loads(
                         modified_full["variables"], object_pairs_hook=OrderedDict
                     )
-                    set_by_path(vars_parsed, path, deepcopy(candidate))
+                    if replace_whole:
+                        set_by_path(vars_parsed, path, deepcopy(candidate))
+                    else:
+                        set_by_path(vars_parsed, path, deepcopy(candidate))
                     modified_full["variables"] = json.dumps(vars_parsed)
                 else:
-                    set_by_path(modified_full["variables"], path, deepcopy(candidate))
+                    if replace_whole:
+                        set_by_path(
+                            modified_full["variables"], path, deepcopy(candidate)
+                        )
+                    else:
+                        set_by_path(
+                            modified_full["variables"], path, deepcopy(candidate)
+                        )
 
                 payloads.append(modified_full)
 
